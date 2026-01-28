@@ -13,11 +13,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter, column_index_from_string
 
+
 # ----------------------------
-# Logging (mostra no Streamlit)
+# Logging
 # ----------------------------
 logger = logging.getLogger("relatorio")
 logger.setLevel(logging.INFO)
+
 
 # ----------------------------
 # Config model
@@ -46,10 +48,11 @@ def read_config_text(config_text: str) -> Tuple[str, List[ConfigCol], List[Confi
     model_name = header_parts[1].strip() if len(header_parts) >= 2 else "MODELO"
 
     cols: List[ConfigCol] = []
-    for i, ln in enumerate(lines[1:], start=2):
+    for ln in lines[1:]:
         parts = ln.split("|")
         if len(parts) != 9:
             continue
+
         try:
             id_ref = int(parts[0].strip())
         except ValueError:
@@ -171,7 +174,7 @@ def extract_raw_value(base_node: ET.Element, caminho: str, *, item_index_1based:
                 return None
             v = v.strip()
             if attr == "Id" and v.startswith("NFe"):
-                v = v[3:]  # mantém só numérica
+                v = v[3:]
             return v or None
 
         # base já é infNFe e caminho começa com infNFe/@Id
@@ -327,7 +330,6 @@ def auto_adjust_width(ws, max_widths: Dict[int, int], padding: int = 2, max_col_
 
 
 def apply_column_formats(ws, col_types: List[str], header_row: int = 1) -> None:
-    # aplica em linhas de dados (após header)
     start_row = header_row + 1
     for i, tipo in enumerate(col_types, start=1):
         t = (tipo or "").strip().upper()
@@ -425,8 +427,10 @@ def ajustar_dados_geral(ws):
             cell.number_format = "dd/mm/yyyy"
 
     ws.insert_rows(1)
-    ws["D1"].value = "=SUBTOTAL(2;A:A)"
-    ws["E1"].value = "=SUBTOTAL(9;K:K)"
+
+    # ✅ Fórmulas no formato correto do Excel (vírgula)
+    ws["D1"].value = "=SUBTOTAL(2,A:A)"
+    ws["E1"].value = "=SUBTOTAL(9,K:K)"
     ws["E1"].number_format = CURRENCY_BR
 
 
@@ -471,7 +475,9 @@ def unificar_produtos(ws):
                 cell.value = str(cell.value).replace("-", "/")
 
     ws.insert_rows(1)
-    ws["C1"].value = "=SUBTOTAL(2;B:B)"
+
+    # ✅ Fórmula correta (vírgula)
+    ws["C1"].value = "=SUBTOTAL(2,B:B)"
 
     check_cols = ["AA", "AE", "BA", "AV", "AR", "AK", "AL"]
     for col in check_cols:
@@ -546,8 +552,10 @@ def unificar_produtos(ws):
     colDifal = colAZ + 1
     ws.insert_cols(colDifal)
     ws.cell(1, colDifal).value = "DIFAL %"
+
     for r in range(2, ultima + 1):
-        ws.cell(r, colDifal).value = f'=IF(AZ{r}=0;"";AZ{r}-AA{r})'
+        # ✅ Fórmula correta (vírgula)
+        ws.cell(r, colDifal).value = f'=IF(AZ{r}=0,"",AZ{r}-AA{r})'
         ws.cell(r, colDifal).number_format = "0.00%"
 
     ws.cell(2, colCof).value = "Aliquota Cofins"
@@ -602,7 +610,11 @@ def build_rows_for_nf(infNFe: ET.Element, cfg_geral: List[ConfigCol], cfg_prod: 
     return row_geral, rows_prod
 
 
-def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> Tuple[Workbook, Dict[str, int]]:
+def generate_workbook(
+    xml_files: List[Tuple[str, bytes]],
+    config_text: str,
+    progress_cb=None,
+) -> Tuple[Workbook, Dict[str, int]]:
     model_name, cfg_geral, cfg_prod = read_config_text(config_text)
 
     wb = Workbook()
@@ -619,7 +631,6 @@ def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> T
     set_header_style(ws_geral, header_row=1)
     set_header_style(ws_prod, header_row=1)
 
-    # freeze antes de "macro" (depois vamos ajustar)
     ws_geral.freeze_panes = "A2"
     ws_prod.freeze_panes = "A2"
 
@@ -630,7 +641,12 @@ def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> T
     skipped = 0
     items = 0
 
-    for name, content in xml_files:
+    total = len(xml_files)
+
+    for i, (name, content) in enumerate(xml_files, start=1):
+        if progress_cb and (i == 1 or i == total or i % 25 == 0):
+            progress_cb(i, total, name)
+
         infNFe = parse_xml_bytes(content)
         if infNFe is None:
             skipped += 1
@@ -645,16 +661,16 @@ def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> T
         ws_geral.append(row_geral)
         ok += 1
 
-        for i, v in enumerate(row_geral, start=1):
+        for ci, v in enumerate(row_geral, start=1):
             s = "" if v is None else str(v)
-            widths_geral[i] = max(widths_geral.get(i, 0), len(s))
+            widths_geral[ci] = max(widths_geral.get(ci, 0), len(s))
 
         for r in rows_prod:
             ws_prod.append(r)
             items += 1
-            for i, v in enumerate(r, start=1):
+            for ci, v in enumerate(r, start=1):
                 s = "" if v is None else str(v)
-                widths_prod[i] = max(widths_prod.get(i, 0), len(s))
+                widths_prod[ci] = max(widths_prod.get(ci, 0), len(s))
 
     apply_column_formats(ws_geral, [c.tipo for c in cfg_geral], header_row=1)
     apply_column_formats(ws_prod, [c.tipo for c in cfg_prod], header_row=1)
@@ -662,21 +678,21 @@ def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> T
     auto_adjust_width(ws_geral, widths_geral)
     auto_adjust_width(ws_prod, widths_prod)
 
-    # -------------------------
-    # Aplicar "macros" em Python
-    # -------------------------
+    if progress_cb:
+        progress_cb(total, total, "Aplicando ajustes (macros)")
+
+    # Aplicar "macros"
     ajustar_dados_geral(ws_geral)
     unificar_produtos(ws_prod)
 
-    # Após inserir linhas no topo, headers viram linha 2
+    # Headers viram linha 2 após inserir linha 1
     set_header_style(ws_geral, header_row=2)
     set_header_style(ws_prod, header_row=2)
 
-    # Congelar 2 primeiras linhas (linha 1 de subtotal + linha 2 de header)
     ws_geral.freeze_panes = "A3"
     ws_prod.freeze_panes = "A3"
 
-    stats = {"ok": ok, "skipped": skipped, "items": items, "cols_geral": len(cfg_geral), "cols_prod": len(cfg_prod)}
+    stats = {"ok": ok, "skipped": skipped, "items": items, "cols_geral": len(cfg_geral), "cols_prod": len(cfg_prod), "model": model_name}
     return wb, stats
 
 
@@ -685,13 +701,12 @@ def generate_workbook(xml_files: List[Tuple[str, bytes]], config_text: str) -> T
 # ----------------------------
 st.set_page_config(page_title="Relatório NF-e (XML → Excel)", layout="wide")
 st.title("Relatório NF-e (XML → Excel)")
-
-st.caption("Envie vários XMLs ou um ZIP com XMLs. O arquivo final já sai com os ajustes (macros) aplicados em Python.")
+st.caption("Envie vários XMLs ou um ZIP com XMLs. O Excel final já sai com os ajustes (macros) aplicados em Python.")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    uploaded_zip = st.file_uploader("ZIP com XMLs (opcional)", type=["zip"])
+    uploaded_zip = st.file_uploader("ZIP com XMLs (recomendado para muitos arquivos)", type=["zip"])
     uploaded_xmls = st.file_uploader("Ou envie vários XMLs", type=["xml"], accept_multiple_files=True)
 
 with col2:
@@ -699,15 +714,15 @@ with col2:
     default_config_path = st.text_input("Ou usar config do repositório (caminho)", value="baserelatorio.txt")
     out_name = st.text_input("Nome do arquivo de saída", value="relatorio.xlsx")
 
+
 def load_config_text() -> str:
     if config_upload is not None:
         return config_upload.getvalue().decode("utf-8", errors="replace")
-
-    # tenta ler do repo
     p = Path(default_config_path)
     if not p.exists():
         raise FileNotFoundError(f"Config não encontrado no repositório: {p}. Faça upload do baserelatorio.txt.")
     return p.read_text(encoding="utf-8", errors="replace")
+
 
 def collect_xml_files() -> List[Tuple[str, bytes]]:
     files: List[Tuple[str, bytes]] = []
@@ -729,6 +744,7 @@ def collect_xml_files() -> List[Tuple[str, bytes]]:
 
     return files
 
+
 btn = st.button("Gerar relatório", type="primary")
 
 if btn:
@@ -740,15 +756,24 @@ if btn:
 
         config_text = load_config_text()
 
+        progress = st.progress(0, text="Preparando...")
+        status = st.empty()
+
+        def progress_cb(done: int, total: int, current_name: str):
+            pct = int((done / total) * 100) if total else 0
+            progress.progress(pct, text=f"Processando: {done}/{total} ({pct}%)")
+            status.write(f"Arquivo atual: `{current_name}`")
+
         with st.spinner("Gerando relatório..."):
-            wb, stats = generate_workbook(xml_files, config_text)
+            wb, stats = generate_workbook(xml_files, config_text, progress_cb=progress_cb)
             bio = io.BytesIO()
             wb.save(bio)
             bio.seek(0)
 
+        progress.progress(100, text="Concluído!")
         st.success("Relatório gerado com sucesso!")
         st.write(
-            f"**NF-es válidas:** {stats['ok']} | **Puladas:** {stats['skipped']} | "
+            f"**Modelo:** {stats['model']} | **NF-es válidas:** {stats['ok']} | **Puladas:** {stats['skipped']} | "
             f"**Itens:** {stats['items']} | **Colunas GERAL:** {stats['cols_geral']} | **Colunas PRODUTOS:** {stats['cols_prod']}"
         )
 
