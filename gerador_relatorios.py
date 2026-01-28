@@ -463,7 +463,7 @@ def ajustar_dados_geral(ws):
 
 
 def unificar_produtos(ws):
-    ws.insert_cols(1)
+    # ws.insert_cols(1) # removido
 
     ultima = _last_row_by_col(ws, "B")
     if ultima < 2:
@@ -830,3 +830,4 @@ if btn:
 
     except Exception as e:
         st.exception(e)
+
