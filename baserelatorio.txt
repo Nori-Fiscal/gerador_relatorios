@@ -1,0 +1,77 @@
+3|MODELO - COMPLETO AUDITORIA|GERAL|True|True|PRODUTOS|False
+101|ide>nNF|Nº da Nota|False|NUMERO|False|3|1|True
+102|ide>serie|Serie|False|NUMERO|False|3|2|True
+103|ide>tpNF|Tipo Oper.|False|ENTRADA/SAIDA|False|3|3|True
+104|ide>natOp|Natureza da Operação|False||False|3|4|True
+105|dest>CNPJCPF|CNPJ/CPF do Destinatário|False|NUMERO|False|3|5|True
+106|dest>xNome|Destinatário|False||False|3|6|True
+107|dest>enderDest>UF|UF do Destinatário|False||False|3|7|True
+108|emit>CNPJCPF|CNPJ/CPF do Emitente|False|NUMERO|False|3|8|True
+109|emit>xNome|Emitente|False||False|3|9|True
+110|emit>enderEmit>UF|UF do Emitente|False||False|3|10|True
+111|total>ICMSTot>vNF|Valor Total da NF-e|False|REAL|False|3|11|True
+112|ide>dhEmi|Data de Emissão|False|DATA|False|3|12|True
+113|total>ICMSTot>vProd|Valor dos Produtos|False|REAL|False|3|13|True
+114|total>ICMSTot>vICMS|Total ICMS|False|REAL|False|3|14|True
+115|total>ICMSTot>vIPI|Total IPI|False|REAL|False|3|15|True
+116|infNFe/@Id|Chave|False||False|3|16|True
+117|infAdic>infCpl|Info. Complementares|False||False|3|17|True
+118|emit>IE|I.E EMITENTE|False||False|3|18|True
+119|total>ICMSTot>vBC|BASE ICMS|False|REAL|False|3|19|True
+120|dest>IE|I.E DESTINATÁRIO|False||False|3|20|True
+201|ide>nNF|Nº da Nota|False|NUMERO|True|3|1|False
+202|ide>natOp|Natureza da Operação|False||True|3|2|False
+203|dest>CNPJCPF|CNPJ/CPF do Destinatário|False||True|3|3|False
+204|dest>xNome|Destinatário|False||True|3|4|False
+205|dest>enderDest>UF|UF do Destinatário|False||True|3|5|False
+206|emit>CNPJCPF|CNPJ/CPF do Emitente|False||True|3|6|False
+207|emit>xNome|Emitente|False||True|3|7|False
+208|emit>enderEmit>UF|UF do Emitente|False||True|3|8|False
+209|total>ICMSTot>vNF|Valor Total da NF-e|False|REAL|True|3|9|False
+210|ide>dhEmi|Data de Emissão|False|DATA|True|3|10|False
+211|@Id|Chave|False||True|3|11|False
+212|prod>cProd|SKU|False||True|3|12|False
+213|prod>NCM|NCM|False||True|3|13|False
+214|prod>xProd|DESCRIÇÃO DO ITEM|False||True|3|14|False
+215|prod>cEAN|EAN|False||True|3|15|False
+216|prod>CFOP|CFOP|False||True|3|16|False
+217|prod>vUnCom|VL. PRODUTO|False|REAL|True|3|17|False
+218|prod>qCom|QUANTIDADE|False|REAL|True|3|18|False
+219|prod>vDesc|DESCONTO|False|REAL|True|3|19|False
+220|prod>vFrete|FRETE|False|REAL|True|3|20|False
+221|prod>vSeg|SEGURO|False|REAL|True|3|21|False
+222|prod>vOutro|DESPESAS ACESSÓRIAS|False|REAL|True|3|22|False
+223|prod>vProd|VALOR TOTAL DO PRODUTO|False|REAL|True|3|23|False
+224|imposto>ICMS>CST|CST|False||True|3|24|False
+225|imposto>ICMS>vBC|BASE DE ICMS|False|REAL|True|3|25|False
+226|imposto>ICMS>pICMS|ALIQUOTA DE ICMS|False||True|3|26|False
+227|imposto>ICMS>vICMS|VALOR DO ICMS|False|REAL|True|3|27|False
+228|imposto>IPI>IPITrib>vBC|BASE DE IPI|False|REAL|True|3|28|False
+229|imposto>IPI>IPITrib>vIPI|VALOR DO IPI|False|REAL|True|3|29|False
+230|imposto>IPI>IPITrib>pIPI|ALÍQUOTA DE IPI|False||True|3|30|False
+231|imposto>PIS>PISAliq>CST|CST PIS ALIQ|False||True|3|31|False
+232|imposto>PIS>PISNT>CST|CST PIS NT|False||True|3|32|False
+233|imposto>PIS>PISOutr>CST|CST PIS OUTR|False||True|3|33|False
+234|imposto>PIS>PISAliq>vBC|BASE DE PIS ALIQ|False|REAL|True|3|34|False
+235|imposto>PIS>PISOutr>vBC|BASE DE PIS OUTR|False|REAL|True|3|35|False
+236|imposto>PIS>PISAliq>pPIS|ALÍQUOTA DE PIS ALIQ|False||True|3|36|False
+237|imposto>PIS>PISOutr>pPIS|ALÍQUOTA DE PIS OUTR|False||True|3|37|False
+238|imposto>PIS>PISAliq>vPIS|VALOR DO PIS ALIQ|False|REAL|True|3|38|False
+239|imposto>PIS>PISOutr>vPIS|VALOR DO PIS OUTR|False|REAL|True|3|39|False
+240|imposto>COFINS>COFINSAliq>CST|CST COFINS ALIQ|False||True|3|40|False
+241|imposto>COFINS>COFINSNT>CST|CST COFINS NT|False||True|3|41|False
+242|imposto>COFINS>COFINSOutr>CST|CST COFINS OUTR|False||True|3|42|False
+243|imposto>COFINS>COFINSAliq>vBC|BASE DE COFINS ALIQ|False|REAL|True|3|43|False
+244|imposto>COFINS>COFINSOutr>vBC|BASE DE COFINS OUTR|False|REAL|True|3|44|False
+245|imposto>COFINS>COFINSAliq>pCOFINS|ALÍQUOTA DE COFINS ALIQ|False||True|3|45|False
+246|imposto>COFINS>COFINSOutr>pCOFINS|ALÍQUOTA DE COFINS OUTR|False||True|3|46|False
+247|imposto>COFINS>COFINSAliq>vCOFINS|VALOR DO COFINS ALIQ|False|REAL|True|3|47|False
+248|imposto>COFINS>COFINSQtde>vCOFINS|VALOR DO COFINS QTDE|False|REAL|True|3|48|False
+249|imposto>COFINS>COFINSOutr>vCOFINS|VALOR DO COFINS OUTR|False|REAL|True|3|49|False
+250|impostoDevol>IPI>vIPIDevol|IPI DEVOLVIDO|False|REAL|True|3|50|False
+251|imposto>ICMSUFDest>vBCUFDest|BASE DIFAL|False|REAL|True|3|51|False
+252|imposto>ICMSUFDest>pICMSUFDest|ICMS DESTINO|False||True|3|52|False
+253|imposto>ICMSUFDest>pFCPUFDest|FCP DESTINO|False||True|3|53|False
+254|imposto>ICMSUFDest>pICMSInterPart|ICMS PARTILHA|False||True|3|54|False
+255|imposto>ICMSUFDest>vICMSUFDest|DIFAL TOTAL DESTINO|False|REAL|True|3|55|False
+256|imposto>ICMSUFDest>vICMSUFRemet|DIFAL TOTAL ORIGEM|False|REAL|True|3|56|False
