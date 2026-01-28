@@ -148,7 +148,12 @@ def _get_text(el: Optional[ET.Element]) -> Optional[str]:
     return val if val else None
 
 
-def extract_raw_value(base_node: ET.Element, caminho: str, *, item_index_1based: Optional[int] = None) -> Optional[str]:
+def extract_raw_value(
+    base_node: ET.Element,
+    caminho: str,
+    *,
+    item_index_1based: Optional[int] = None,
+) -> Optional[str]:
     path = (caminho or "").strip()
     if not path:
         return None
@@ -227,7 +232,13 @@ def extract_raw_value(base_node: ET.Element, caminho: str, *, item_index_1based:
     return _get_text(cur)
 
 
-def extract_value_with_fallback_produtos(det_node: ET.Element, infNFe_node: ET.Element, caminho: str, *, item_index_1based: int) -> Optional[str]:
+def extract_value_with_fallback_produtos(
+    det_node: ET.Element,
+    infNFe_node: ET.Element,
+    caminho: str,
+    *,
+    item_index_1based: int,
+) -> Optional[str]:
     v = extract_raw_value(det_node, caminho, item_index_1based=item_index_1based)
     if v is not None:
         return v
@@ -346,6 +357,23 @@ def apply_column_formats(ws, col_types: List[str], header_row: int = 1) -> None:
                 c.number_format = "dd/mm/yyyy"
 
 
+def normalize_excel_formulas(wb: Workbook) -> int:
+    """
+    Blindagem: fórmulas no XML do Excel devem usar ',' (invariante).
+    Se alguma célula tiver ';', o Excel pode reparar/remover as fórmulas ao abrir.
+    """
+    changed = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                v = cell.value
+                if cell.data_type == "f" or (isinstance(v, str) and v.startswith("=")):
+                    if isinstance(v, str) and ";" in v:
+                        cell.value = v.replace(";", ",")
+                        changed += 1
+    return changed
+
+
 # ----------------------------
 # "Macros" em Python (openpyxl)
 # ----------------------------
@@ -428,7 +456,7 @@ def ajustar_dados_geral(ws):
 
     ws.insert_rows(1)
 
-    # ✅ Fórmulas no formato correto do Excel (vírgula)
+    # Fórmulas SEMPRE com vírgula
     ws["D1"].value = "=SUBTOTAL(2,A:A)"
     ws["E1"].value = "=SUBTOTAL(9,K:K)"
     ws["E1"].number_format = CURRENCY_BR
@@ -476,7 +504,7 @@ def unificar_produtos(ws):
 
     ws.insert_rows(1)
 
-    # ✅ Fórmula correta (vírgula)
+    # Fórmula SEMPRE com vírgula
     ws["C1"].value = "=SUBTOTAL(2,B:B)"
 
     check_cols = ["AA", "AE", "BA", "AV", "AR", "AK", "AL"]
@@ -554,7 +582,7 @@ def unificar_produtos(ws):
     ws.cell(1, colDifal).value = "DIFAL %"
 
     for r in range(2, ultima + 1):
-        # ✅ Fórmula correta (vírgula)
+        # Fórmula SEMPRE com vírgula
         ws.cell(r, colDifal).value = f'=IF(AZ{r}=0,"",AZ{r}-AA{r})'
         ws.cell(r, colDifal).number_format = "0.00%"
 
@@ -592,7 +620,11 @@ def parse_xml_bytes(xml_bytes: bytes) -> Optional[ET.Element]:
     return get_inf_nfe(root)
 
 
-def build_rows_for_nf(infNFe: ET.Element, cfg_geral: List[ConfigCol], cfg_prod: List[ConfigCol]) -> Tuple[List[Any], List[List[Any]]]:
+def build_rows_for_nf(
+    infNFe: ET.Element,
+    cfg_geral: List[ConfigCol],
+    cfg_prod: List[ConfigCol],
+) -> Tuple[List[Any], List[List[Any]]]:
     row_geral = []
     for col in cfg_geral:
         raw = extract_raw_value(infNFe, col.caminho, item_index_1based=None)
@@ -692,7 +724,14 @@ def generate_workbook(
     ws_geral.freeze_panes = "A3"
     ws_prod.freeze_panes = "A3"
 
-    stats = {"ok": ok, "skipped": skipped, "items": items, "cols_geral": len(cfg_geral), "cols_prod": len(cfg_prod), "model": model_name}
+    stats = {
+        "ok": ok,
+        "skipped": skipped,
+        "items": items,
+        "cols_geral": len(cfg_geral),
+        "cols_prod": len(cfg_prod),
+        "model": model_name,
+    }
     return wb, stats
 
 
@@ -766,6 +805,10 @@ if btn:
 
         with st.spinner("Gerando relatório..."):
             wb, stats = generate_workbook(xml_files, config_text, progress_cb=progress_cb)
+
+            # Blindagem final (garante que não existe ';' em fórmulas)
+            changed = normalize_excel_formulas(wb)
+
             bio = io.BytesIO()
             wb.save(bio)
             bio.seek(0)
@@ -776,6 +819,7 @@ if btn:
             f"**Modelo:** {stats['model']} | **NF-es válidas:** {stats['ok']} | **Puladas:** {stats['skipped']} | "
             f"**Itens:** {stats['items']} | **Colunas GERAL:** {stats['cols_geral']} | **Colunas PRODUTOS:** {stats['cols_prod']}"
         )
+        st.caption(f"Fórmulas normalizadas (troca ';' por ','): {changed}")
 
         st.download_button(
             label="Baixar Excel",
