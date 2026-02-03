@@ -179,7 +179,7 @@ def extract_raw_value(
                 return None
             v = v.strip()
             if attr == "Id" and v.startswith("NFe"):
-                v = v[3:]
+                v = v[3:]  # fica só a chave numérica
             return v or None
 
         # base já é infNFe e caminho começa com infNFe/@Id
@@ -200,7 +200,7 @@ def extract_raw_value(
 
         nxt = first_child_by_local(cur, tag_part) if tag_part else None
 
-        # ICMS inteligente (compatível com imposto>ICMS>CST etc.)
+        # ICMS inteligente
         if nxt is None and local_name(cur.tag) == "ICMS":
             alt = find_in_icms_variants(cur, tag_part)
             if alt is not None:
@@ -275,7 +275,7 @@ def convert_value(raw: Optional[str], tipo: str, titulo_coluna: str) -> Any:
     t = (tipo or "").strip().upper()
     col = (titulo_coluna or "").strip().upper()
 
-    # Formatar CNPJ/CPF com máscara (chave fica como está)
+    # Formatar CNPJ/CPF com máscara
     if "CNPJ/CPF" in col or col in ("CNPJ", "CPF"):
         return format_cpf_cnpj(raw)
 
@@ -463,7 +463,8 @@ def ajustar_dados_geral(ws):
 
 
 def unificar_produtos(ws):
-    # ws.insert_cols(1) # removido
+    # Se você já testou e está OK sem coluna auxiliar, deixe comentado:
+    # ws.insert_cols(1)
 
     ultima = _last_row_by_col(ws, "B")
     if ultima < 2:
@@ -582,7 +583,6 @@ def unificar_produtos(ws):
     ws.cell(1, colDifal).value = "DIFAL %"
 
     for r in range(2, ultima + 1):
-        # Fórmula SEMPRE com vírgula
         ws.cell(r, colDifal).value = f'=IF(AZ{r}=0,"",AZ{r}-AA{r})'
         ws.cell(r, colDifal).number_format = "0.00%"
 
@@ -610,7 +610,7 @@ def unificar_produtos(ws):
 
 
 # ----------------------------
-# Report generation from uploaded XML bytes
+# Report generation helpers
 # ----------------------------
 def parse_xml_bytes(xml_bytes: bytes) -> Optional[ET.Element]:
     try:
@@ -642,8 +642,32 @@ def build_rows_for_nf(
     return row_geral, rows_prod
 
 
+# ----------------------------
+# ZIP routing (NORMAL / CANCELADAS / ignore INUTILIZADA)
+# ----------------------------
+@dataclass(frozen=True)
+class XmlEntry:
+    name: str
+    content: bytes
+    bucket: str  # "NORMAL" ou "CANCELADAS"
+    zip_path: str
+
+
+def _path_parts(p: str) -> List[str]:
+    p = (p or "").replace("\\", "/")
+    return [x.strip() for x in p.split("/") if x.strip()]
+
+
+def _is_inutilizada(parts: List[str]) -> bool:
+    return any(x.upper() == "INUTILIZADA" for x in parts)
+
+
+def _is_cancelada(parts: List[str]) -> bool:
+    return any("CANCELADA" in x.upper() for x in parts)
+
+
 def generate_workbook(
-    xml_files: List[Tuple[str, bytes]],
+    xml_entries: List[XmlEntry],
     config_text: str,
     progress_cb=None,
 ) -> Tuple[Workbook, Dict[str, int]]:
@@ -652,34 +676,54 @@ def generate_workbook(
     wb = Workbook()
     wb.remove(wb.active)
 
+    # Abas normais
     ws_geral = wb.create_sheet("GERAL")
     ws_prod = wb.create_sheet("PRODUTOS")
 
+    # Abas canceladas (só se existirem)
+    has_canceladas = any(e.bucket == "CANCELADAS" for e in xml_entries)
+    ws_geral_c = wb.create_sheet("GERAL - CANCELADAS") if has_canceladas else None
+    ws_prod_c = wb.create_sheet("PRODUTOS - CANCELADAS") if has_canceladas else None
+
     headers_geral = [c.titulo for c in cfg_geral]
     headers_prod = [c.titulo for c in cfg_prod]
+
+    # headers (normais)
     ws_geral.append(headers_geral)
     ws_prod.append(headers_prod)
-
     set_header_style(ws_geral, header_row=1)
     set_header_style(ws_prod, header_row=1)
-
     ws_geral.freeze_panes = "A2"
     ws_prod.freeze_panes = "A2"
 
+    # headers (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        ws_geral_c.append(headers_geral)
+        ws_prod_c.append(headers_prod)
+        set_header_style(ws_geral_c, header_row=1)
+        set_header_style(ws_prod_c, header_row=1)
+        ws_geral_c.freeze_panes = "A2"
+        ws_prod_c.freeze_panes = "A2"
+
+    # widths
     widths_geral: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_geral, start=1)}
     widths_prod: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_prod, start=1)}
+    widths_geral_c: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_geral, start=1)} if has_canceladas else {}
+    widths_prod_c: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_prod, start=1)} if has_canceladas else {}
 
     ok = 0
-    skipped = 0
     items = 0
+    ok_canceladas = 0
+    items_canceladas = 0
+    skipped = 0
 
-    total = len(xml_files)
+    total = len(xml_entries)
 
-    for i, (name, content) in enumerate(xml_files, start=1):
+    for i, entry in enumerate(xml_entries, start=1):
         if progress_cb and (i == 1 or i == total or i % 25 == 0):
-            progress_cb(i, total, name)
+            progress_cb(i, total, entry.zip_path)
 
-        infNFe = parse_xml_bytes(content)
+        infNFe = parse_xml_bytes(entry.content)
         if infNFe is None:
             skipped += 1
             continue
@@ -690,47 +734,75 @@ def generate_workbook(
             skipped += 1
             continue
 
-        ws_geral.append(row_geral)
-        ok += 1
+        if entry.bucket == "CANCELADAS" and has_canceladas and ws_geral_c and ws_prod_c:
+            t_ws_geral = ws_geral_c
+            t_ws_prod = ws_prod_c
+            t_wg = widths_geral_c
+            t_wp = widths_prod_c
+            ok_canceladas += 1
+            items_canceladas += len(rows_prod)
+        else:
+            t_ws_geral = ws_geral
+            t_ws_prod = ws_prod
+            t_wg = widths_geral
+            t_wp = widths_prod
+            ok += 1
+            items += len(rows_prod)
 
+        t_ws_geral.append(row_geral)
         for ci, v in enumerate(row_geral, start=1):
             s = "" if v is None else str(v)
-            widths_geral[ci] = max(widths_geral.get(ci, 0), len(s))
+            t_wg[ci] = max(t_wg.get(ci, 0), len(s))
 
         for r in rows_prod:
-            ws_prod.append(r)
-            items += 1
+            t_ws_prod.append(r)
             for ci, v in enumerate(r, start=1):
                 s = "" if v is None else str(v)
-                widths_prod[ci] = max(widths_prod.get(ci, 0), len(s))
+                t_wp[ci] = max(t_wp.get(ci, 0), len(s))
 
+    # formatos e widths (normais)
     apply_column_formats(ws_geral, [c.tipo for c in cfg_geral], header_row=1)
     apply_column_formats(ws_prod, [c.tipo for c in cfg_prod], header_row=1)
-
     auto_adjust_width(ws_geral, widths_geral)
     auto_adjust_width(ws_prod, widths_prod)
+
+    # formatos e widths (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        apply_column_formats(ws_geral_c, [c.tipo for c in cfg_geral], header_row=1)
+        apply_column_formats(ws_prod_c, [c.tipo for c in cfg_prod], header_row=1)
+        auto_adjust_width(ws_geral_c, widths_geral_c)
+        auto_adjust_width(ws_prod_c, widths_prod_c)
 
     if progress_cb:
         progress_cb(total, total, "Aplicando ajustes (macros)")
 
-    # Aplicar "macros"
+    # macros (normais)
     ajustar_dados_geral(ws_geral)
     unificar_produtos(ws_prod)
-
-    # Headers viram linha 2 após inserir linha 1
     set_header_style(ws_geral, header_row=2)
     set_header_style(ws_prod, header_row=2)
-
     ws_geral.freeze_panes = "A3"
     ws_prod.freeze_panes = "A3"
 
+    # macros (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        ajustar_dados_geral(ws_geral_c)
+        unificar_produtos(ws_prod_c)
+        set_header_style(ws_geral_c, header_row=2)
+        set_header_style(ws_prod_c, header_row=2)
+        ws_geral_c.freeze_panes = "A3"
+        ws_prod_c.freeze_panes = "A3"
+
     stats = {
+        "model": model_name,
         "ok": ok,
-        "skipped": skipped,
         "items": items,
+        "ok_canceladas": ok_canceladas,
+        "items_canceladas": items_canceladas,
+        "skipped": skipped,
         "cols_geral": len(cfg_geral),
         "cols_prod": len(cfg_prod),
-        "model": model_name,
+        "has_canceladas": has_canceladas,
     }
     return wb, stats
 
@@ -740,7 +812,10 @@ def generate_workbook(
 # ----------------------------
 st.set_page_config(page_title="Relatório NF-e (XML → Excel)", layout="wide")
 st.title("Relatório NF-e (XML → Excel)")
-st.caption("Envie vários XMLs ou um ZIP com XMLs. O Excel final já sai com os ajustes (macros) aplicados em Python.")
+st.caption(
+    "Envie vários XMLs ou um ZIP com XMLs. "
+    "No ZIP: ignora pastas INUTILIZADA; pastas com CANCELADA vão para abas separadas."
+)
 
 col1, col2 = st.columns(2)
 
@@ -763,8 +838,8 @@ def load_config_text() -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
-def collect_xml_files() -> List[Tuple[str, bytes]]:
-    files: List[Tuple[str, bytes]] = []
+def collect_xml_entries() -> List[XmlEntry]:
+    entries: List[XmlEntry] = []
 
     if uploaded_zip is not None:
         zdata = uploaded_zip.getvalue()
@@ -772,26 +847,51 @@ def collect_xml_files() -> List[Tuple[str, bytes]]:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                if info.filename.lower().endswith(".xml"):
-                    files.append((Path(info.filename).name, zf.read(info)))
-        return files
+                if not info.filename.lower().endswith(".xml"):
+                    continue
+
+                parts = _path_parts(info.filename)
+                if _is_inutilizada(parts):
+                    continue
+
+                bucket = "CANCELADAS" if _is_cancelada(parts) else "NORMAL"
+                entries.append(
+                    XmlEntry(
+                        name=Path(info.filename).name,
+                        content=zf.read(info),
+                        bucket=bucket,
+                        zip_path=info.filename,
+                    )
+                )
+        return entries
 
     if uploaded_xmls:
         for f in uploaded_xmls:
-            files.append((f.name, f.getvalue()))
-        return files
+            entries.append(
+                XmlEntry(
+                    name=f.name,
+                    content=f.getvalue(),
+                    bucket="NORMAL",
+                    zip_path=f.name,
+                )
+            )
+        return entries
 
-    return files
+    return entries
 
 
 btn = st.button("Gerar relatório", type="primary")
 
 if btn:
     try:
-        xml_files = collect_xml_files()
-        if not xml_files:
+        xml_entries = collect_xml_entries()
+        if not xml_entries:
             st.error("Envie um ZIP com XMLs ou selecione vários XMLs.")
             st.stop()
+
+        n_normal = sum(1 for e in xml_entries if e.bucket == "NORMAL")
+        n_cancel = sum(1 for e in xml_entries if e.bucket == "CANCELADAS")
+        st.caption(f"Arquivos considerados: NORMAL={n_normal} | CANCELADAS={n_cancel} | (INUTILIZADA ignorado)")
 
         config_text = load_config_text()
 
@@ -804,9 +904,8 @@ if btn:
             status.write(f"Arquivo atual: `{current_name}`")
 
         with st.spinner("Gerando relatório..."):
-            wb, stats = generate_workbook(xml_files, config_text, progress_cb=progress_cb)
+            wb, stats = generate_workbook(xml_entries, config_text, progress_cb=progress_cb)
 
-            # Blindagem final (garante que não existe ';' em fórmulas)
             changed = normalize_excel_formulas(wb)
 
             bio = io.BytesIO()
@@ -815,11 +914,14 @@ if btn:
 
         progress.progress(100, text="Concluído!")
         st.success("Relatório gerado com sucesso!")
+
         st.write(
-            f"**Modelo:** {stats['model']} | **NF-es válidas:** {stats['ok']} | **Puladas:** {stats['skipped']} | "
-            f"**Itens:** {stats['items']} | **Colunas GERAL:** {stats['cols_geral']} | **Colunas PRODUTOS:** {stats['cols_prod']}"
+            f"**Modelo:** {stats['model']}  \n"
+            f"**NF-es válidas (NORMAL):** {stats['ok']} | **Itens (NORMAL):** {stats['items']}  \n"
+            f"**NF-es válidas (CANCELADAS):** {stats['ok_canceladas']} | **Itens (CANCELADAS):** {stats['items_canceladas']}  \n"
+            f"**Puladas (inválidas):** {stats['skipped']}  \n"
+            f"**Fórmulas normalizadas (troca ';'→','):** {changed}"
         )
-        st.caption(f"Fórmulas normalizadas (troca ';' por ','): {changed}")
 
         st.download_button(
             label="Baixar Excel",
@@ -830,4 +932,3 @@ if btn:
 
     except Exception as e:
         st.exception(e)
-
