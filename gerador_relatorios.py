@@ -463,9 +463,6 @@ def ajustar_dados_geral(ws):
 
 
 def unificar_produtos(ws):
-    # Se você já testou e está OK sem coluna auxiliar, deixe comentado:
-    # ws.insert_cols(1)
-
     ultima = _last_row_by_col(ws, "B")
     if ultima < 2:
         return
@@ -612,12 +609,20 @@ def unificar_produtos(ws):
 # ----------------------------
 # Report generation helpers
 # ----------------------------
-def parse_xml_bytes(xml_bytes: bytes) -> Optional[ET.Element]:
+def parse_xml_bytes_verbose(xml_bytes: bytes) -> Tuple[Optional[ET.Element], Optional[str]]:
+    """
+    Retorna (infNFe, motivo_erro). Se infNFe vier None, motivo_erro vem preenchido.
+    """
     try:
         root = ET.fromstring(xml_bytes)
-    except Exception:
-        return None
-    return get_inf_nfe(root)
+    except Exception as e:
+        return None, f"XML inválido (parse): {type(e).__name__}: {str(e)[:240]}"
+
+    inf = get_inf_nfe(root)
+    if inf is None:
+        return None, "Tag <infNFe> não encontrada (arquivo não parece ser NF-e, ou está incompleto/evento/CT-e)."
+
+    return inf, None
 
 
 def build_rows_for_nf(
@@ -666,11 +671,43 @@ def _is_cancelada(parts: List[str]) -> bool:
     return any("CANCELADA" in x.upper() for x in parts)
 
 
+# ----------------------------
+# ERROS (NFs não processadas)
+# ----------------------------
+@dataclass(frozen=True)
+class ProcessError:
+    zip_path: str
+    name: str
+    bucket: str
+    etapa: str
+    motivo: str
+    detalhe: str
+
+
+def _safe_str(v: Any, limit: int = 320) -> str:
+    s = "" if v is None else str(v)
+    s = s.replace("\r", " ").replace("\n", " ").strip()
+    return s[:limit]
+
+
+def _finalize_header_and_freeze(ws, expected_first_header: str):
+    """
+    Se a macro inseriu a linha 1 (subtotal), o header vira linha 2.
+    Caso contrário, o header segue na linha 1.
+    """
+    if ws.max_row >= 2 and ws.cell(2, 1).value == expected_first_header:
+        set_header_style(ws, header_row=2)
+        ws.freeze_panes = "A3"
+    else:
+        set_header_style(ws, header_row=1)
+        ws.freeze_panes = "A2"
+
+
 def generate_workbook(
     xml_entries: List[XmlEntry],
     config_text: str,
     progress_cb=None,
-) -> Tuple[Workbook, Dict[str, int]]:
+) -> Tuple[Workbook, Dict[str, Any]]:
     model_name, cfg_geral, cfg_prod = read_config_text(config_text)
 
     wb = Workbook()
@@ -717,21 +754,43 @@ def generate_workbook(
     items_canceladas = 0
     skipped = 0
 
+    errors: List[ProcessError] = []
+
     total = len(xml_entries)
 
     for i, entry in enumerate(xml_entries, start=1):
         if progress_cb and (i == 1 or i == total or i % 25 == 0):
             progress_cb(i, total, entry.zip_path)
 
-        infNFe = parse_xml_bytes(entry.content)
+        infNFe, motivo = parse_xml_bytes_verbose(entry.content)
         if infNFe is None:
             skipped += 1
+            errors.append(
+                ProcessError(
+                    zip_path=entry.zip_path,
+                    name=entry.name,
+                    bucket=entry.bucket,
+                    etapa="LEITURA XML",
+                    motivo=_safe_str(motivo),
+                    detalhe="",
+                )
+            )
             continue
 
         try:
             row_geral, rows_prod = build_rows_for_nf(infNFe, cfg_geral, cfg_prod)
-        except Exception:
+        except Exception as e:
             skipped += 1
+            errors.append(
+                ProcessError(
+                    zip_path=entry.zip_path,
+                    name=entry.name,
+                    bucket=entry.bucket,
+                    etapa="EXTRAÇÃO",
+                    motivo=f"{type(e).__name__}",
+                    detalhe=_safe_str(str(e)),
+                )
+            )
             continue
 
         if entry.bucket == "CANCELADAS" and has_canceladas and ws_geral_c and ws_prod_c:
@@ -779,27 +838,42 @@ def generate_workbook(
     # macros (normais)
     ajustar_dados_geral(ws_geral)
     unificar_produtos(ws_prod)
-    set_header_style(ws_geral, header_row=2)
-    set_header_style(ws_prod, header_row=2)
-    ws_geral.freeze_panes = "A3"
-    ws_prod.freeze_panes = "A3"
+    _finalize_header_and_freeze(ws_geral, expected_first_header=headers_geral[0] if headers_geral else "")
+    _finalize_header_and_freeze(ws_prod, expected_first_header=headers_prod[0] if headers_prod else "")
 
     # macros (canceladas)
     if has_canceladas and ws_geral_c and ws_prod_c:
         ajustar_dados_geral(ws_geral_c)
         unificar_produtos(ws_prod_c)
-        set_header_style(ws_geral_c, header_row=2)
-        set_header_style(ws_prod_c, header_row=2)
-        ws_geral_c.freeze_panes = "A3"
-        ws_prod_c.freeze_panes = "A3"
+        _finalize_header_and_freeze(ws_geral_c, expected_first_header=headers_geral[0] if headers_geral else "")
+        _finalize_header_and_freeze(ws_prod_c, expected_first_header=headers_prod[0] if headers_prod else "")
 
-    stats = {
+    # aba de erros (se houver)
+    if errors:
+        ws_err = wb.create_sheet("NAO_PROCESSADAS")
+        headers_err = ["Arquivo (ZIP/Origem)", "Bucket", "Etapa", "Motivo", "Detalhe", "Nome do Arquivo"]
+        ws_err.append(headers_err)
+        set_header_style(ws_err, header_row=1)
+        ws_err.freeze_panes = "A2"
+
+        widths_err: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_err, start=1)}
+        for er in errors:
+            row = [er.zip_path, er.bucket, er.etapa, er.motivo, er.detalhe, er.name]
+            ws_err.append(row)
+            for ci, v in enumerate(row, start=1):
+                s = "" if v is None else str(v)
+                widths_err[ci] = max(widths_err.get(ci, 0), len(s))
+
+        auto_adjust_width(ws_err, widths_err, max_col_width=80)
+
+    stats: Dict[str, Any] = {
         "model": model_name,
         "ok": ok,
         "items": items,
         "ok_canceladas": ok_canceladas,
         "items_canceladas": items_canceladas,
         "skipped": skipped,
+        "errors_count": len(errors),
         "cols_geral": len(cfg_geral),
         "cols_prod": len(cfg_prod),
         "has_canceladas": has_canceladas,
@@ -814,7 +888,8 @@ st.set_page_config(page_title="Relatório NF-e (XML → Excel)", layout="wide")
 st.title("Relatório NF-e (XML → Excel)")
 st.caption(
     "Envie vários XMLs ou um ZIP com XMLs. "
-    "No ZIP: ignora pastas INUTILIZADA; pastas com CANCELADA vão para abas separadas."
+    "No ZIP: ignora pastas INUTILIZADA; pastas com CANCELADA vão para abas separadas. "
+    "Se algum XML falhar, a aba 'NAO_PROCESSADAS' mostrará o motivo."
 )
 
 col1, col2 = st.columns(2)
@@ -838,7 +913,7 @@ def load_config_text() -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
-def collect_xml_entries() -> List[XmlEntry]:
+def collect_xml_entries() -> List["XmlEntry"]:
     entries: List[XmlEntry] = []
 
     if uploaded_zip is not None:
@@ -905,7 +980,6 @@ if btn:
 
         with st.spinner("Gerando relatório..."):
             wb, stats = generate_workbook(xml_entries, config_text, progress_cb=progress_cb)
-
             changed = normalize_excel_formulas(wb)
 
             bio = io.BytesIO()
@@ -920,14 +994,19 @@ if btn:
             f"**NF-es válidas (NORMAL):** {stats['ok']} | **Itens (NORMAL):** {stats['items']}  \n"
             f"**NF-es válidas (CANCELADAS):** {stats['ok_canceladas']} | **Itens (CANCELADAS):** {stats['items_canceladas']}  \n"
             f"**Puladas (inválidas):** {stats['skipped']}  \n"
+            f"**Com motivo registrado (aba NAO_PROCESSADAS):** {stats['errors_count']}  \n"
             f"**Fórmulas normalizadas (troca ';'→','):** {changed}"
         )
+
+        if stats["errors_count"] > 0:
+            st.info("Abra o Excel e veja a aba **NAO_PROCESSADAS** para entender o motivo de cada XML não processado.")
 
         st.download_button(
             label="Baixar Excel",
             data=bio.getvalue(),
             file_name=out_name if out_name.lower().endswith(".xlsx") else (out_name + ".xlsx"),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_relatorio",
         )
 
     except Exception as e:
