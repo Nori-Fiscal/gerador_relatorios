@@ -882,6 +882,187 @@ def generate_workbook(
 
 
 # ----------------------------
+# Processamento leve (ZIP grande no Streamlit Cloud)
+# - evita copiar o ZIP inteiro para memória (getvalue + BytesIO)
+# - processa XML a XML (stream)
+# ----------------------------
+from contextlib import contextmanager
+import os
+import tempfile
+
+
+@contextmanager
+def open_zip_from_upload(uploaded_file):
+    """Abre um ZIP enviado no st.file_uploader de forma mais leve.
+
+    No Streamlit Cloud, usar uploaded_file.getvalue() cria uma cópia grande em RAM.
+    Aqui gravamos o buffer em arquivo temporário e usamos ZipFile no disco.
+    """
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        # getbuffer() (quando existe) evita cópia extra
+        if hasattr(uploaded_file, "getbuffer"):
+            tmp.write(uploaded_file.getbuffer())
+        else:
+            tmp.write(uploaded_file.getvalue())
+        tmp.flush()
+        tmp.close()
+
+        with zipfile.ZipFile(tmp.name, "r") as zf:
+            yield zf
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+def generate_workbook_stream(
+    entries_iter,
+    total: int,
+    has_canceladas: bool,
+    config_text: str,
+    progress_cb=None,
+) -> Tuple[Workbook, Dict[str, Any]]:
+    """Versão stream do generate_workbook: processa cada XML sem manter tudo em memória."""
+    model_name, cfg_geral, cfg_prod = read_config_text(config_text)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # Abas normais
+    ws_geral = wb.create_sheet("GERAL")
+    ws_prod = wb.create_sheet("PRODUTOS")
+
+    # Abas canceladas (só se existirem)
+    ws_geral_c = wb.create_sheet("GERAL - CANCELADAS") if has_canceladas else None
+    ws_prod_c = wb.create_sheet("PRODUTOS - CANCELADAS") if has_canceladas else None
+
+    headers_geral = [c.titulo for c in cfg_geral]
+    headers_prod = [c.titulo for c in cfg_prod]
+
+    # headers (normais)
+    ws_geral.append(headers_geral)
+    ws_prod.append(headers_prod)
+    set_header_style(ws_geral, header_row=1)
+    set_header_style(ws_prod, header_row=1)
+    ws_geral.freeze_panes = "A2"
+    ws_prod.freeze_panes = "A2"
+
+    # headers (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        ws_geral_c.append(headers_geral)
+        ws_prod_c.append(headers_prod)
+        set_header_style(ws_geral_c, header_row=1)
+        set_header_style(ws_prod_c, header_row=1)
+        ws_geral_c.freeze_panes = "A2"
+        ws_prod_c.freeze_panes = "A2"
+
+    # widths
+    widths_geral: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_geral, start=1)}
+    widths_prod: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_prod, start=1)}
+    widths_geral_c: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_geral, start=1)} if has_canceladas else {}
+    widths_prod_c: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_prod, start=1)} if has_canceladas else {}
+
+    ok = 0
+    items = 0
+    ok_canceladas = 0
+    items_canceladas = 0
+    skipped = 0
+
+    errors: List[ProcessError] = []
+
+    for i, entry in enumerate(entries_iter, start=1):
+        if progress_cb and (i == 1 or i == total or i % 25 == 0):
+            progress_cb(i, total, entry.zip_path)
+
+        infNFe, motivo = parse_xml_bytes_verbose(entry.content)
+        if infNFe is None:
+            skipped += 1
+            errors.append(
+                ProcessError(
+                    zip_path=entry.zip_path,
+                    name=entry.name,
+                    bucket=entry.bucket,
+                    etapa="LEITURA XML",
+                    motivo=_safe_str(motivo),
+                    detalhe="",
+                )
+            )
+            continue
+
+        try:
+            row_geral, rows_prod = build_rows_for_nf(infNFe, cfg_geral, cfg_prod)
+        except Exception as e:
+            skipped += 1
+            errors.append(
+                ProcessError(
+                    zip_path=entry.zip_path,
+                    name=entry.name,
+                    bucket=entry.bucket,
+                    etapa="EXTRAÇÃO",
+                    motivo=f"{type(e).__name__}",
+                    detalhe=_safe_str(str(e)),
+                )
+            )
+            continue
+
+        if entry.bucket == "CANCELADAS" and has_canceladas and ws_geral_c and ws_prod_c:
+            t_ws_geral = ws_geral_c
+            t_ws_prod = ws_prod_c
+            t_wg = widths_geral_c
+            t_wp = widths_prod_c
+            ok_canceladas += 1
+            items_canceladas += len(rows_prod)
+        else:
+            t_ws_geral = ws_geral
+            t_ws_prod = ws_prod
+            t_wg = widths_geral
+            t_wp = widths_prod
+            ok += 1
+            items += len(rows_prod)
+
+        t_ws_geral.append(row_geral)
+        for ci, v in enumerate(row_geral, start=1):
+            s = "" if v is None else str(v)
+            t_wg[ci] = max(t_wg.get(ci, 0), len(s))
+
+        for r in rows_prod:
+            t_ws_prod.append(r)
+            for ci, v in enumerate(r, start=1):
+                s = "" if v is None else str(v)
+                t_wp[ci] = max(t_wp.get(ci, 0), len(s))
+
+    # formatos e widths (normais)
+    apply_column_formats(ws_geral, [c.tipo for c in cfg_geral], header_row=1)
+    apply_column_formats(ws_prod, [c.tipo for c in cfg_prod], header_row=1)
+    auto_adjust_width(ws_geral, widths_geral)
+    auto_adjust_width(ws_prod, widths_prod)
+
+    # formatos e widths (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        apply_column_formats(ws_geral_c, [c.tipo for c in cfg_geral], header_row=1)
+        apply_column_formats(ws_prod_c, [c.tipo for c in cfg_prod], header_row=1)
+        auto_adjust_width(ws_geral_c, widths_geral_c)
+        auto_adjust_width(ws_prod_c, widths_prod_c)
+
+    if progress_cb:
+        progress_cb(total, total, "fim")
+
+    stats = {
+        "modelo": model_name,
+        "ok_normal": ok,
+        "itens_normal": items,
+        "ok_canceladas": ok_canceladas,
+        "itens_canceladas": items_canceladas,
+        "ignorados/erro": skipped,
+        "erros": errors,
+    }
+    return wb, stats
+
+
+
+# ----------------------------
 # Streamlit UI
 # ----------------------------
 st.set_page_config(page_title="Relatório NF-e (XML → Excel)", layout="wide")
@@ -913,61 +1094,37 @@ def load_config_text() -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
-def collect_xml_entries() -> List["XmlEntry"]:
-    entries: List[XmlEntry] = []
 
-    if uploaded_zip is not None:
-        zdata = uploaded_zip.getvalue()
-        with zipfile.ZipFile(io.BytesIO(zdata), "r") as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                if not info.filename.lower().endswith(".xml"):
-                    continue
+def iter_entries_from_zip(zf: zipfile.ZipFile) -> Tuple[List[Tuple[zipfile.ZipInfo, str]], int, int]:
+    """Retorna lista de (ZipInfo, bucket) e contagens NORMAL/CANCELADAS sem ler o conteúdo."""
+    metas: List[Tuple[zipfile.ZipInfo, str]] = []
+    n_normal = 0
+    n_cancel = 0
 
-                parts = _path_parts(info.filename)
-                if _is_inutilizada(parts):
-                    continue
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        if not info.filename.lower().endswith(".xml"):
+            continue
 
-                bucket = "CANCELADAS" if _is_cancelada(parts) else "NORMAL"
-                entries.append(
-                    XmlEntry(
-                        name=Path(info.filename).name,
-                        content=zf.read(info),
-                        bucket=bucket,
-                        zip_path=info.filename,
-                    )
-                )
-        return entries
+        parts = _path_parts(info.filename)
+        if _is_inutilizada(parts):
+            continue
 
-    if uploaded_xmls:
-        for f in uploaded_xmls:
-            entries.append(
-                XmlEntry(
-                    name=f.name,
-                    content=f.getvalue(),
-                    bucket="NORMAL",
-                    zip_path=f.name,
-                )
-            )
-        return entries
+        bucket = "CANCELADAS" if _is_cancelada(parts) else "NORMAL"
+        metas.append((info, bucket))
+        if bucket == "CANCELADAS":
+            n_cancel += 1
+        else:
+            n_normal += 1
 
-    return entries
+    return metas, n_normal, n_cancel
 
 
 btn = st.button("Gerar relatório", type="primary")
 
 if btn:
     try:
-        xml_entries = collect_xml_entries()
-        if not xml_entries:
-            st.error("Envie um ZIP com XMLs ou selecione vários XMLs.")
-            st.stop()
-
-        n_normal = sum(1 for e in xml_entries if e.bucket == "NORMAL")
-        n_cancel = sum(1 for e in xml_entries if e.bucket == "CANCELADAS")
-        st.caption(f"Arquivos considerados: NORMAL={n_normal} | CANCELADAS={n_cancel} | (INUTILIZADA ignorado)")
-
         config_text = load_config_text()
 
         progress = st.progress(0, text="Preparando...")
@@ -978,36 +1135,83 @@ if btn:
             progress.progress(pct, text=f"Processando: {done}/{total} ({pct}%)")
             status.write(f"Arquivo atual: `{current_name}`")
 
-        with st.spinner("Gerando relatório..."):
-            wb, stats = generate_workbook(xml_entries, config_text, progress_cb=progress_cb)
-            changed = normalize_excel_formulas(wb)
+        # ----------------------------
+        # MODO 1: ZIP (processa em stream)
+        # ----------------------------
+        if uploaded_zip is not None:
+            with open_zip_from_upload(uploaded_zip) as zf:
+                metas, n_normal, n_cancel = iter_entries_from_zip(zf)
+                total = len(metas)
+                if total == 0:
+                    st.error("Nenhum XML válido encontrado no ZIP (inutilizadas são ignoradas).")
+                    st.stop()
 
-            bio = io.BytesIO()
-            wb.save(bio)
-            bio.seek(0)
+                has_canceladas = n_cancel > 0
+                st.caption(f"Arquivos considerados: NORMAL={n_normal} | CANCELADAS={n_cancel} | (INUTILIZADA ignorado)")
 
-        progress.progress(100, text="Concluído!")
-        st.success("Relatório gerado com sucesso!")
+                def gen_entries():
+                    for info, bucket in metas:
+                        name = Path(info.filename).name
+                        with zf.open(info, "r") as f:
+                            content = f.read()
+                        yield XmlEntry(name=name, content=content, bucket=bucket, zip_path=info.filename)
 
-        st.write(
-            f"**Modelo:** {stats['model']}  \n"
-            f"**NF-es válidas (NORMAL):** {stats['ok']} | **Itens (NORMAL):** {stats['items']}  \n"
-            f"**NF-es válidas (CANCELADAS):** {stats['ok_canceladas']} | **Itens (CANCELADAS):** {stats['items_canceladas']}  \n"
-            f"**Puladas (inválidas):** {stats['skipped']}  \n"
-            f"**Com motivo registrado (aba NAO_PROCESSADAS):** {stats['errors_count']}  \n"
-            f"**Fórmulas normalizadas (troca ';'→','):** {changed}"
-        )
+                wb, stats = generate_workbook_stream(
+                    entries_iter=gen_entries(),
+                    total=total,
+                    has_canceladas=has_canceladas,
+                    config_text=config_text,
+                    progress_cb=progress_cb,
+                )
 
-        if stats["errors_count"] > 0:
-            st.info("Abra o Excel e veja a aba **NAO_PROCESSADAS** para entender o motivo de cada XML não processado.")
+        # ----------------------------
+        # MODO 2: vários XMLs (normalmente poucos)
+        # ----------------------------
+        elif uploaded_xmls:
+            total = len(uploaded_xmls)
 
+            def gen_entries_files():
+                for f in uploaded_xmls:
+                    # f.read() consome o buffer; em seguida o Streamlit mantém em memória mesmo,
+                    # mas aqui evita cópias extras (getvalue()).
+                    content = f.read()
+                    yield XmlEntry(name=f.name, content=content, bucket="NORMAL", zip_path=f.name)
+
+            st.caption(f"Arquivos considerados: NORMAL={total} | CANCELADAS=0")
+            wb, stats = generate_workbook_stream(
+                entries_iter=gen_entries_files(),
+                total=total,
+                has_canceladas=False,
+                config_text=config_text,
+                progress_cb=progress_cb,
+            )
+        else:
+            st.error("Envie um ZIP com XMLs ou selecione vários XMLs.")
+            st.stop()
+
+        # Gera XLSX em memória
+        out = io.BytesIO()
+        wb.save(out)
+        out.seek(0)
+
+        st.success("Relatório gerado!")
         st.download_button(
-            label="Baixar Excel",
-            data=bio.getvalue(),
-            file_name=out_name if out_name.lower().endswith(".xlsx") else (out_name + ".xlsx"),
+            "Baixar Excel",
+            data=out.getvalue(),
+            file_name=out_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_excel_relatorio",
         )
+
+        # Erros
+        errors: List[ProcessError] = stats.get("erros", [])
+        if errors:
+            st.warning(f"Alguns arquivos foram ignorados/deram erro: {len(errors)}")
+            with st.expander("Ver detalhes dos erros"):
+                for e in errors[:500]:
+                    st.write(f"- [{e.bucket}] {e.zip_path} | {e.etapa}: {e.motivo} {e.detalhe}")
+                if len(errors) > 500:
+                    st.write(f"... (mostrando 500 de {len(errors)})")
 
     except Exception as e:
         st.exception(e)
+
