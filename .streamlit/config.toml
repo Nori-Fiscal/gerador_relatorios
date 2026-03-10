@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 300
+maxMessageSize = 300
+
+[client]
+toolbarMode = "viewer"
+
+[logger]
+level = "info"
