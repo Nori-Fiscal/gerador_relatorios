@@ -469,7 +469,7 @@ def unificar_produtos(ws):
 
     cols_to_number = ["B", "J", "R", "T", "U", "V", "W", "X", "Z",
                       "AB", "AC", "AD", "AI", "AJ", "AM", "AN", "AR",
-                      "AS", "AV", "AW", "AX", "AY", "AZ", "BD", "BE"]
+                      "AS", "AV", "AW", "AX", "AY", "AZ", "BD", "BE", "BF", "BG"]
     for col in cols_to_number:
         cidx = column_index_from_string(col)
         for r in range(2, ultima + 1):
@@ -480,7 +480,7 @@ def unificar_produtos(ws):
 
     cols_money = ["J", "R", "T", "U", "V", "W", "X", "Z",
                   "AB", "AC", "AD", "AI", "AJ", "AM", "AN", "AR",
-                  "AS", "AV", "AW", "AX", "AY", "AZ", "BD", "BE"]
+                  "AS", "AV", "AW", "AX", "AY", "AZ", "BD", "BE", "BF"]
     for col in cols_money:
         cidx = column_index_from_string(col)
         for r in range(2, ultima + 1):
@@ -501,6 +501,7 @@ def unificar_produtos(ws):
                 cell.value = str(cell.value).replace("-", "/")
 
     ws.insert_rows(1)
+    ultima += 1  # dados deslocaram 1 linha para baixo
 
     # Fórmula SEMPRE com vírgula
     ws["C1"].value = "=SUBTOTAL(2,B:B)"
@@ -515,7 +516,7 @@ def unificar_produtos(ws):
 
     def _fix_percent(col_letter: str):
         cidx = column_index_from_string(col_letter)
-        for r in range(2, ultima + 1):
+        for r in range(3, ultima + 1):
             cell = ws.cell(r, cidx)
             s = "" if cell.value is None else str(cell.value).strip()
             if s == "":
@@ -534,9 +535,10 @@ def unificar_produtos(ws):
 
     _fix_percent("AA")
     _fix_percent("AE")
+    _fix_percent("BG")
 
     cBA = column_index_from_string("BA")
-    for r in range(2, ultima + 1):
+    for r in range(3, ultima + 1):
         cell = ws.cell(r, cBA)
         s = "" if cell.value is None else str(cell.value).strip()
         if s == "":
@@ -551,7 +553,7 @@ def unificar_produtos(ws):
 
     cAK = column_index_from_string("AK")
     cAL = column_index_from_string("AL")
-    for r in range(2, ultima + 1):
+    for r in range(3, ultima + 1):
         src = ws.cell(r, cAL).value
         if src is None or str(src).strip() == "":
             src = ws.cell(r, cAK).value
@@ -577,9 +579,9 @@ def unificar_produtos(ws):
     colAZ = column_index_from_string("AZ")
     colDifal = colAZ + 1
     ws.insert_cols(colDifal)
-    ws.cell(1, colDifal).value = "DIFAL %"
+    ws.cell(2, colDifal).value = "DIFAL %"
 
-    for r in range(2, ultima + 1):
+    for r in range(3, ultima + 1):
         ws.cell(r, colDifal).value = f'=IF(AZ{r}=0,"",AZ{r}-AA{r})'
         ws.cell(r, colDifal).number_format = "0.00%"
 
@@ -1047,6 +1049,40 @@ def generate_workbook_stream(
         auto_adjust_width(ws_prod_c, widths_prod_c)
 
     if progress_cb:
+        progress_cb(total, total, "Aplicando ajustes (macros)")
+
+    # macros (normais)
+    ajustar_dados_geral(ws_geral)
+    unificar_produtos(ws_prod)
+    _finalize_header_and_freeze(ws_geral, expected_first_header=headers_geral[0] if headers_geral else "")
+    _finalize_header_and_freeze(ws_prod, expected_first_header=headers_prod[0] if headers_prod else "")
+
+    # macros (canceladas)
+    if has_canceladas and ws_geral_c and ws_prod_c:
+        ajustar_dados_geral(ws_geral_c)
+        unificar_produtos(ws_prod_c)
+        _finalize_header_and_freeze(ws_geral_c, expected_first_header=headers_geral[0] if headers_geral else "")
+        _finalize_header_and_freeze(ws_prod_c, expected_first_header=headers_prod[0] if headers_prod else "")
+
+    # aba de erros (se houver)
+    if errors:
+        ws_err = wb.create_sheet("NAO_PROCESSADAS")
+        headers_err = ["Arquivo (ZIP/Origem)", "Bucket", "Etapa", "Motivo", "Detalhe", "Nome do Arquivo"]
+        ws_err.append(headers_err)
+        set_header_style(ws_err, header_row=1)
+        ws_err.freeze_panes = "A2"
+
+        widths_err: Dict[int, int] = {i: len(h) for i, h in enumerate(headers_err, start=1)}
+        for er in errors:
+            row = [er.zip_path, er.bucket, er.etapa, er.motivo, er.detalhe, er.name]
+            ws_err.append(row)
+            for ci, v in enumerate(row, start=1):
+                s = "" if v is None else str(v)
+                widths_err[ci] = max(widths_err.get(ci, 0), len(s))
+
+        auto_adjust_width(ws_err, widths_err, max_col_width=80)
+
+    if progress_cb:
         progress_cb(total, total, "fim")
 
     stats = {
@@ -1214,4 +1250,3 @@ if btn:
 
     except Exception as e:
         st.exception(e)
-
